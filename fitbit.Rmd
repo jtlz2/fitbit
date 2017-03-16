@@ -1,0 +1,194 @@
+---
+title: 'Coursera Assignment: JHU Machine Learning in R [fitbit data]'
+author: "Jonathan Zwart [jtlz2]"
+output:
+  html_document: default
+  github_document: default
+  pdf_document: default
+url: http://github.com/jtlz2/fitbit
+---
+
+# Background
+
+This is my report for the final, peer-reviewed assignment in the JHU Machine Learning in R Coursera course.
+
+The data, from Fitbit, are the Weight
+Lifting Exercise Dataset (see http://groupware.les.inf.puc-rio.br/har), available from:
+
+Training Set: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+Test Set: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The aim is to predict the "classe" variable in the training set, a five-level (A, B, C, D, E) indicator of how an individual carried out an exercise.
+
+The prediction is for 20 different test cases (see below).
+
+
+# Nomenclature
+
+I will divide the data as follows:
+
+1. Training set: 70 per cent of the "Training Set" data, used for training only
+2. Test set: 30 per cent of the "Training Set" data, used for error rate estimation
+3. Holdout set: the "Test Set" data, used for verification of the analysis only
+
+# Preliminaries
+
+1. Set the working directory and load libraries
+2. Register 4 cores to attempt acceleration of the training
+3. Set the random seed for training
+
+```{r}
+setwd("/Users/jtlz2/coursera/jhu/ml/project/fitbit")
+
+library(caret)
+library(pROC)
+
+library(doMC)
+doMC::registerDoMC(cores=4)
+
+library(randomForest)
+
+set.seed(1234)
+
+```
+
+# Data selection and Preprocessing
+
+1. Load the training data
+2. Convert the "classe" variable to a factor
+3. Divide the training data into training (70 per cent) and test (30 per cent) sets
+
+```{r}
+
+trainFrame<-read.csv("data/pml-training.csv")
+trainFrame$classe<-factor(trainFrame$classe)
+inTrain<-createDataPartition(trainFrame$classe,p=0.7,list=FALSE)
+trainFr<-trainFrame[inTrain,]
+testFr<-trainFrame[-inTrain,]
+
+```
+
+4. Remove any near-zero variables from the training and test sets (based on the training set only)
+
+```{r}
+
+nzv<-nearZeroVar(trainFr,saveMetrics=TRUE)
+trainFr<-trainFr[!nzv$nzv]
+testFr<-testFr[!nzv$nzv]
+
+```
+
+5. The first 5 columns contain no information useful for the training, so remove them
+
+```{r}
+
+excludeCols=1:5
+trainFr<-trainFr[,-excludeCols]
+testFr<-testFr[,-excludeCols]
+
+
+```
+
+6. We finally have to load the holdout set, but only because we need to find columns that are common between the training and holdout sets (otherwise the holdout prediction will not work).
+
+7. At the same time, we strip out the first 5 columns (see above), and remove any near-zero variables (in either set) from the holdout set.
+
+```{r}
+
+holdoutFr<-read.csv("data/pml-testing.csv")
+
+holdoutFr<-holdoutFr[,-excludeCols]
+nzv2<-nearZeroVar(holdoutFr,saveMetrics=TRUE)
+holdoutFr<-holdoutFr[!nzv2$nzv]
+
+classe=trainFr$classe
+classe2=testFr$classe
+
+common_cols <- intersect(colnames(trainFr), colnames(holdoutFr))
+trainFr<-trainFr[,common_cols]
+testFr<-testFr[,common_cols]
+
+holdoutFr<-holdoutFr[,common_cols]
+trainFr$classe=classe
+testFr$classe=classe2
+
+```
+
+8. Now remove incomplete cases from the training, test and holdout sets
+
+```{r}
+
+trainFr<-trainFr[complete.cases(trainFr),]
+testFr<-testFr[complete.cases(testFr),]
+holdoutFr<-holdoutFr[complete.cases(holdoutFr),]
+
+```
+
+9. Preprocess the training and test sets with KNN imputation for missing values. This step is probably not necessary since we have already removed incomplete cases.
+
+```{r}
+
+
+preObj<-preProcess(trainFr[,-ncol(trainFr)],method="knnImpute")
+trainFr<-predict(preObj,trainFr)
+preObj3<-preProcess(testFr[,-ncol(testFr)],method="knnImpute")
+testFr<-predict(preObj3,testFr)
+
+```
+
+# Training
+
+1. Now train using a random forest (which has performed well throughout my experience of the course), omitting any NA fields (also probably now unnecessary)
+
+```{r}
+
+RF<-randomForest(classe ~.,data=trainFr,na.action=na.omit)
+RF
+
+```
+
+2. We can see that the OOB error rate is < 0.3 per cent
+
+3. Plot receiver operating curves (ROCs) for each class. These turn out to be not-very-useful because the accuracy is so high.
+
+```{r}
+
+predTest<-as.numeric(predict(RF, testFr, type = 'response'))
+conf<-confusionMatrix(testFr$classe,predict(RF,testFr))
+
+predTest<-as.numeric(predict(RF, testFr, type = 'response'))
+roc.multi<-multiclass.roc(testFr$classe, predTest)
+
+rs <- roc.multi[['rocs']]
+plot.roc(rs[[1]])
+sapply(2:length(rs),function(i) lines.roc(rs[[i]],col=i))
+
+```
+
+# Prediction
+
+1. Now the training is done, KNN impute the holdout set and predict using the earlier RF model
+
+```{r}
+
+preObj2<-preProcess(holdoutFr,method="knnImpute")
+hF<-predict(preObj,holdoutFr)
+p<-predict(RF,hF)
+p
+
+```
+
+2. Having earlier scored 20/20 in the test, I can assert the answers in order to unit-test my code after any refactoring. If the final statement evaluates to TRUE, the code is working correctly.
+
+```{r}
+
+answers<-c("B",  "A",  "B",  "A",  "A",  "E",  "D",  "B",  "A",  "A",  "B",  "C",  "B",  "A",  "E",  "E",  "A",  "B",  "B",  "B")
+all(p==answers)
+
+```
+
+# End of report
+
+Jonathan Zwart
+16 March 2017
